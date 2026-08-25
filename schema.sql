@@ -20,7 +20,16 @@ CREATE TABLE IF NOT EXISTS poll_state (
   telegram_offset   INTEGER NOT NULL DEFAULT 0,
   webhook_cleared   INTEGER NOT NULL DEFAULT 0,
   helius_webhook_id TEXT,
+  last_webhook_at   TEXT,
+  last_webhook_note TEXT,
   last_test_at      TEXT
 );
 
 INSERT OR IGNORE INTO poll_state (id) VALUES (1);
+
+CREATE TABLE IF NOT EXISTS evm_cursors (
+  wallet  TEXT NOT NULL,
+  chain   TEXT NOT NULL,
+  last_tx TEXT,
+  PRIMARY KEY (wallet, chain)
+);

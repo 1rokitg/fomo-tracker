@@ -21,3 +21,10 @@ CREATE TABLE IF NOT EXISTS seen_theses (
   handle   TEXT NOT NULL,
   seen_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS evm_cursors (
+  wallet  TEXT NOT NULL,
+  chain   TEXT NOT NULL,
+  last_tx TEXT,
+  PRIMARY KEY (wallet, chain)
+);

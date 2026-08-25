@@ -2,16 +2,17 @@
 
 Telegram bot that posts **clan swap alerts** for your fomo.family clan.
 
-**Two data sources, because FomoScan doesn't cover both jobs:**
+**Three data sources:**
 
 - **FomoScan** resolves a handle to its verified Solana/EVM wallets (identity only — no trade feed).
-- **Helius** is polled every minute for SWAP transactions on those Solana wallets. No inbound webhooks.
+- **Helius** enhanced webhook + cron address sync for Solana swaps.
+- **Alchemy** `POST /evm-webhook` (Address Activity) plus a per-minute `alchemy_getAssetTransfers` poll for Base, Ethereum, and BNB.
 
 Alerts are posted to the configured Telegram group (`TELEGRAM_CHAT_ID` in `wrangler.toml`) via Bot API `sendMessage`. That is outbound-only — the bot does not need a Telegram webhook.
 
 Each alert is a **clan alert**: clan name, 24h rank, and combined 24h PnL come from FomoScan [`/v2/leaderboard/clans?window=24h`](https://api.fomoscan.sh/docs) (matched on `config.clanId`). Member @handles are not on that board, so the roster is still `config.json`.
 
-EVM wallets are resolved and stored but not watched for swaps in this version.
+EVM wallets on the roster (Base / Ethereum / BNB) are watched when `ALCHEMY_API_KEY` is set. First poll per wallet+chain records a cursor and does not replay old transfers. Point an Alchemy Address Activity webhook at `https://<your-worker-url>/evm-webhook` if you want push instead of waiting for cron.
 
 ## 1. Prerequisites
 
@@ -47,6 +48,7 @@ npx wrangler d1 execute fomo-tracker --remote --file=./schema-migrate.sql
 wrangler secret put FOMOSCAN_KEY
 wrangler secret put TELEGRAM_BOT_TOKEN
 wrangler secret put HELIUS_API_KEY
+wrangler secret put ALCHEMY_API_KEY
 ```
 
 Set `TELEGRAM_CHAT_ID` in `wrangler.toml` `[vars]` to the group id (e.g. `-1004446376533`).

@@ -10,7 +10,59 @@ const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 const USD1 = "USD1ttGY1N17NEEHlmELoaybftRBUSerhqYiQzvEmuB";
 const PYUSD = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
-const QUOTE_MINTS = new Set([WSOL, USDC, USDT, USD1, PYUSD]);
+const ETH_NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const WETH_ETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
+const WETH_BASE = "0x4200000000000000000000000000000000000006";
+const WBNB = "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c";
+const USDC_ETH = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
+const USDC_BASE = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+const USDT_ETH = "0xdac17f958d2ee523a2206206994597c13d831ec7";
+const USDT_BNB = "0x55d398326f99059ff775485246999027b3197955";
+const QUOTE_MINTS = new Set([
+  WSOL,
+  USDC,
+  USDT,
+  USD1,
+  PYUSD,
+  ETH_NATIVE,
+  WETH_ETH,
+  WETH_BASE,
+  WBNB,
+  USDC_ETH,
+  USDC_BASE,
+  USDT_ETH,
+  USDT_BNB,
+]);
+
+export const EVM_CHAINS = [
+  {
+    id: "base",
+    alchemy: "base-mainnet",
+    network: "BASE_MAINNET",
+    explorerTx: (hash) => `https://basescan.org/tx/${hash}`,
+    explorerAddr: (addr) => `https://basescan.org/address/${addr}`,
+    wrapped: WETH_BASE,
+    nativeSymbol: "ETH",
+  },
+  {
+    id: "ethereum",
+    alchemy: "eth-mainnet",
+    network: "ETH_MAINNET",
+    explorerTx: (hash) => `https://etherscan.io/tx/${hash}`,
+    explorerAddr: (addr) => `https://etherscan.io/address/${addr}`,
+    wrapped: WETH_ETH,
+    nativeSymbol: "ETH",
+  },
+  {
+    id: "bsc",
+    alchemy: "bnb-mainnet",
+    network: "BNB_MAINNET",
+    explorerTx: (hash) => `https://bscscan.com/tx/${hash}`,
+    explorerAddr: (addr) => `https://bscscan.com/address/${addr}`,
+    wrapped: WBNB,
+    nativeSymbol: "BNB",
+  },
+];
 
 export function fomoscanHeaders(env) {
   return { Authorization: `Bearer ${env.FOMOSCAN_KEY}` };
@@ -110,8 +162,36 @@ export function clanHeadline(clan) {
   return bits.join(" · ");
 }
 
+export function normalizeEvm(addr) {
+  const s = String(addr || "").trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(s)) return null;
+  return s.toLowerCase();
+}
+
+export function isEvmAddress(addr) {
+  return Boolean(normalizeEvm(addr));
+}
+
+export function canonMint(mint) {
+  return normalizeEvm(mint) || mint || null;
+}
+
 function isQuoteMint(mint) {
-  return Boolean(mint) && QUOTE_MINTS.has(mint);
+  const key = canonMint(mint);
+  return Boolean(key) && QUOTE_MINTS.has(key);
+}
+
+function isNativeQuoteMint(mint) {
+  const key = canonMint(mint);
+  return key === WSOL || key === ETH_NATIVE || key === WETH_ETH || key === WETH_BASE || key === WBNB;
+}
+
+export function evmChain(network) {
+  const slugs = chainSlugs(network);
+  return (
+    EVM_CHAINS.find((c) => c.id === slugs.dex || c.id === slugs.fomo || c.network === String(network || "").toUpperCase()) ||
+    null
+  );
 }
 
 function swapMints(tokens, native) {
@@ -313,6 +393,14 @@ const QUOTE_META = {
   [USDT]: { symbol: "USDT", name: "Tether" },
   [USD1]: { symbol: "USD1", name: "USD1" },
   [PYUSD]: { symbol: "PYUSD", name: "PayPal USD" },
+  [ETH_NATIVE]: { symbol: "ETH", name: "Ether" },
+  [WETH_ETH]: { symbol: "ETH", name: "Ether" },
+  [WETH_BASE]: { symbol: "ETH", name: "Ether" },
+  [WBNB]: { symbol: "BNB", name: "BNB" },
+  [USDC_ETH]: { symbol: "USDC", name: "USD Coin" },
+  [USDC_BASE]: { symbol: "USDC", name: "USD Coin" },
+  [USDT_ETH]: { symbol: "USDT", name: "Tether" },
+  [USDT_BNB]: { symbol: "USDT", name: "Tether" },
 };
 
 export function escapeHtml(s) {
@@ -336,7 +424,7 @@ export function formatMoney(n) {
 }
 
 function quoteSymbol(mint) {
-  return QUOTE_META[mint]?.symbol || null;
+  return QUOTE_META[canonMint(mint)]?.symbol || null;
 }
 
 function fmtQty(n) {
@@ -470,11 +558,12 @@ async function fetchHolderCount(mint, chain, fetchImpl) {
 
 export async function fetchDexToken(mint, fetchImpl = fetch, network = "sol") {
   if (!mint) return null;
-  if (isQuoteMint(mint)) {
+  const key = canonMint(mint) || mint;
+  if (isQuoteMint(key)) {
     return {
-      ...emptyDexToken(mint),
-      ...QUOTE_META[mint],
-      priceUsd: mint === WSOL ? null : 1,
+      ...emptyDexToken(key),
+      ...QUOTE_META[key],
+      priceUsd: isNativeQuoteMint(key) ? null : 1,
     };
   }
   const want = chainSlugs(network).dex;
@@ -490,17 +579,24 @@ export async function fetchDexToken(mint, fetchImpl = fetch, network = "sol") {
     const base = pair.baseToken?.address === mint ? pair.baseToken : pair.quoteToken || pair.baseToken;
     const priceUsd = Number(pair.priceUsd) || null;
     const priceNative = Number(pair.priceNative) || null;
-    const quoteAddr = pair.quoteToken?.address || "";
+    const quoteAddr = canonMint(pair.quoteToken?.address || "") || "";
     const quoteIsSol = quoteAddr === WSOL || /^sol$/i.test(pair.quoteToken?.symbol || "");
-    const solPriceUsd =
-      quoteIsSol && priceUsd && priceNative && priceNative > 0 ? priceUsd / priceNative : null;
+    const quoteIsNative =
+      quoteIsSol ||
+      quoteAddr === WETH_ETH ||
+      quoteAddr === WETH_BASE ||
+      quoteAddr === WBNB ||
+      /^(eth|weth|bnb|wbnb)$/i.test(pair.quoteToken?.symbol || "");
+    const nativePriceUsd =
+      quoteIsNative && priceUsd && priceNative && priceNative > 0 ? priceUsd / priceNative : null;
     const holders = await fetchHolderCount(mint, pair.chainId || want, fetchImpl);
     return {
       mint,
       symbol: base?.symbol || pair.baseToken?.symbol || null,
       name: base?.name || pair.baseToken?.name || null,
       priceUsd,
-      solPriceUsd,
+      solPriceUsd: nativePriceUsd,
+      nativePriceUsd,
       mcap: pair.marketCap || pair.fdv || null,
       liquidity: Number(pair.liquidity?.usd) || null,
       pairCreatedAt: Number(pair.pairCreatedAt) || null,
@@ -517,11 +613,11 @@ export async function fetchDexToken(mint, fetchImpl = fetch, network = "sol") {
 function tradeUsd(focus, token) {
   const quote = focus?.quote;
   const qAmt = Number(quote?.tokenAmount);
-  if (quote?.mint === WSOL && Number.isFinite(qAmt) && qAmt > 0) {
-    const solPx = Number(token?.solPriceUsd);
-    if (Number.isFinite(solPx) && solPx > 0) return qAmt * solPx;
+  if (isNativeQuoteMint(quote?.mint) && Number.isFinite(qAmt) && qAmt > 0) {
+    const nativePx = Number(token?.nativePriceUsd ?? token?.solPriceUsd);
+    if (Number.isFinite(nativePx) && nativePx > 0) return qAmt * nativePx;
   }
-  if (quote && quote.mint !== WSOL) {
+  if (quote && !isNativeQuoteMint(quote.mint) && isQuoteMint(quote.mint)) {
     const n = Number(quote.tokenAmount);
     if (Number.isFinite(n) && n > 0) return n;
   }
@@ -562,8 +658,13 @@ function htmlLink(url, label) {
 function linkRow({ sig, mint, network } = {}) {
   const slugs = chainSlugs(network);
   const bits = [];
-  if (sig && slugs.fomo === "solana") {
-    bits.push(htmlLink(`https://solscan.io/tx/${sig}`, "Scan"));
+  if (sig) {
+    if (slugs.fomo === "solana") {
+      bits.push(htmlLink(`https://solscan.io/tx/${sig}`, "Scan"));
+    } else {
+      const chain = evmChain(network);
+      if (chain) bits.push(htmlLink(chain.explorerTx(sig), "Scan"));
+    }
   }
   if (mint) {
     bits.push(htmlLink(`https://fomo.family/tokens/${slugs.fomo}/${mint}`, "Fomo"));
@@ -616,8 +717,10 @@ export function formatClanAlert({ persona, evt, clan, isClanMember, token } = {}
   const symbol = token?.symbol || (mint ? short(mint) : null);
   const name = token?.name && token.name !== token.symbol ? token.name : null;
   const isTest = /test ping/i.test(evt?.description || "");
-  const wallet = persona?.solana_address || persona?.solanaAddress || null;
-  const network = token?.chainId || "sol";
+  const solWallet = persona?.solana_address || persona?.solanaAddress || null;
+  const evmWallet = normalizeEvm(persona?.evm_address || persona?.evmAddress);
+  const network = token?.chainId || evt?.chainId || "sol";
+  const wallet = evmChain(network) ? evmWallet || solWallet : solWallet || evmWallet;
 
   const lines = [`📣 <b>${escapeHtml(clan?.found ? clan.name : "Clan")}</b>`, clanSubline(clan), ""];
 
@@ -633,9 +736,11 @@ export function formatClanAlert({ persona, evt, clan, isClanMember, token } = {}
 
   const memberBits = [`🎯 Member: ${who}`];
   if (!isTest && wallet) {
-    memberBits.push(
-      `(${htmlLink(`https://solscan.io/address/${wallet}`, escapeHtml(short(wallet)))})`,
-    );
+    const chain = evmChain(network);
+    const href = chain
+      ? chain.explorerAddr(wallet)
+      : `https://solscan.io/address/${wallet}`;
+    memberBits.push(`(${htmlLink(href, escapeHtml(short(wallet)))})`);
   }
   lines.push(memberBits.join(" "));
   if (isTest) {
@@ -836,6 +941,174 @@ export function heliusEvents(payload) {
   return [payload];
 }
 
+export function alchemyNetworkToChain(network) {
+  const raw = String(network || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_");
+  const row = EVM_CHAINS.find((c) => c.network === raw || c.id === String(network || "").toLowerCase());
+  return row?.id || "base";
+}
+
+function unwrapAlchemyActivity(payload) {
+  if (!payload) return { network: null, activity: [] };
+  if (Array.isArray(payload)) return { network: null, activity: payload };
+  const event = payload.event || payload;
+  const activity =
+    event.activity ||
+    payload.activity ||
+    (Array.isArray(event.transfers) ? event.transfers : null) ||
+    payload.transfers ||
+    [];
+  return {
+    network: event.network || payload.network || payload.chain || null,
+    activity: Array.isArray(activity) ? activity : [],
+  };
+}
+
+function transferHash(t) {
+  return t?.hash || t?.transactionHash || t?.txnHash || null;
+}
+
+function transferAmount(t) {
+  if (t?.value != null && Number.isFinite(Number(t.value))) return Number(t.value);
+  const raw = t?.rawContract?.value;
+  const decimals = Number.parseInt(t?.rawContract?.decimal || t?.rawContract?.decimals || "18", 16);
+  if (raw && String(raw).startsWith("0x") && Number.isFinite(decimals)) {
+    const n = Number.parseInt(raw, 16) / 10 ** decimals;
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+}
+
+function transferMint(t, chainId) {
+  const addr = normalizeEvm(t?.rawContract?.address || t?.rawContractAddress || t?.contractAddress);
+  if (addr) return addr;
+  const meta = EVM_CHAINS.find((c) => c.id === chainId);
+  return meta?.wrapped || ETH_NATIVE;
+}
+
+export function alchemyTxToEnhanced(transfers, owner, chainId, hash) {
+  const me = normalizeEvm(owner);
+  const tokenTransfers = [];
+  for (const t of transfers || []) {
+    const from = normalizeEvm(t.from || t.fromAddress);
+    const to = normalizeEvm(t.to || t.toAddress);
+    const mint = transferMint(t, chainId);
+    const amt = transferAmount(t);
+    if (!me || !amt || !mint) continue;
+    if (from === me) tokenTransfers.push({ fromUserAccount: me, mint, tokenAmount: amt });
+    if (to === me) tokenTransfers.push({ toUserAccount: me, mint, tokenAmount: amt });
+  }
+  return {
+    type: "UNKNOWN",
+    signature: hash,
+    chainId,
+    feePayer: me,
+    tokenTransfers,
+  };
+}
+
+/** Turn Alchemy Address Activity (or getAssetTransfers rows) into swap-shaped events. */
+export function alchemyActivityToSwaps(payload) {
+  const { network, activity } = unwrapAlchemyActivity(payload);
+  const chainId = alchemyNetworkToChain(network);
+  const byHash = new Map();
+  for (const t of activity) {
+    const hash = transferHash(t);
+    if (!hash) continue;
+    if (!byHash.has(hash)) byHash.set(hash, []);
+    byHash.get(hash).push(t);
+  }
+
+  const events = [];
+  for (const [hash, transfers] of byHash) {
+    const owners = new Set();
+    for (const t of transfers) {
+      const from = normalizeEvm(t.from || t.fromAddress);
+      const to = normalizeEvm(t.to || t.toAddress);
+      if (from) owners.add(from);
+      if (to) owners.add(to);
+    }
+    for (const owner of owners) {
+      const raw = alchemyTxToEnhanced(transfers, owner, chainId, hash);
+      const evt = asSwapEvent(raw);
+      if (swapFocus(evt)?.token?.mint) events.push(evt);
+    }
+  }
+  return events;
+}
+
+export function uniqueTxHashes(transfers) {
+  const hashes = [];
+  const seen = new Set();
+  for (const t of transfers || []) {
+    const hash = transferHash(t);
+    if (!hash) continue;
+    const key = hash.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    hashes.push(hash);
+  }
+  return hashes;
+}
+
+/** Newest-first Alchemy pages. First run stores latest hash and does not replay. */
+export function evmPollPlan(transfers, lastTx) {
+  const hashes = uniqueTxHashes(transfers);
+  if (!hashes.length) return { hashes: [], latest: lastTx || null, prime: false };
+  if (!lastTx) return { hashes: [], latest: hashes[0], prime: true };
+  const fresh = [];
+  for (const hash of hashes) {
+    if (hash.toLowerCase() === String(lastTx).toLowerCase()) break;
+    fresh.push(hash);
+  }
+  return { hashes: fresh.reverse(), latest: hashes[0], prime: false };
+}
+
+export async function alchemyGetAssetTransfers(env, { chain, fromAddress, toAddress, fetchImpl = fetch } = {}) {
+  const meta = EVM_CHAINS.find((c) => c.id === chain);
+  if (!meta || !env.ALCHEMY_API_KEY) return [];
+  const res = await fetchImpl(`https://${meta.alchemy}.g.alchemy.com/v2/${env.ALCHEMY_API_KEY}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "alchemy_getAssetTransfers",
+      params: [
+        {
+          fromBlock: "0x0",
+          toBlock: "latest",
+          ...(fromAddress ? { fromAddress } : {}),
+          ...(toAddress ? { toAddress } : {}),
+          category: ["external", "erc20", "internal"],
+          withMetadata: true,
+          excludeZeroValue: true,
+          maxCount: "0x32",
+          order: "desc",
+        },
+      ],
+    }),
+  });
+  if (!res.ok) {
+    console.error("alchemy transfers failed", chain, res.status, await res.text());
+    return [];
+  }
+  const json = await res.json();
+  if (json?.error) {
+    console.error("alchemy transfers error", chain, json.error);
+    return [];
+  }
+  return json?.result?.transfers || [];
+}
+
+export async function fetchEvmWalletTransfers(env, address, chain, fetchImpl = fetch) {
+  const from = await alchemyGetAssetTransfers(env, { chain, fromAddress: address, fetchImpl });
+  const to = await alchemyGetAssetTransfers(env, { chain, toAddress: address, fetchImpl });
+  return [...from, ...to];
+}
+
 export function collectTouchedAccounts(evt) {
   const set = new Set();
   if (evt?.feePayer) set.add(evt.feePayer);
@@ -854,7 +1127,7 @@ export function collectTouchedAccounts(evt) {
     if (t?.fromUserAccount) set.add(t.fromUserAccount);
     if (t?.toUserAccount) set.add(t.toUserAccount);
   }
-  return [...set];
+  return [...set].map((a) => normalizeEvm(a) || a);
 }
 
 export function txSignature(evt) {

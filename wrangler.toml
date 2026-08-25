@@ -28,3 +28,5 @@ invocation_logs = true
 #   TELEGRAM_BOT_TOKEN  - from @BotFather
 #   HELIUS_API_KEY      - from helius.dev (free tier works)
 #   HELIUS_WEBHOOK_SECRET - optional; set as the Helius auth header
+#   ALCHEMY_API_KEY     - EVM poll (Base / Ethereum / BNB)
+#   ALCHEMY_WEBHOOK_SECRET - optional; raw X-Alchemy-Signature value

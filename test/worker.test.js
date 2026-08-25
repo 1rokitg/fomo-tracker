@@ -8,17 +8,24 @@ function jsonResponse(body, status = 200) {
   });
 }
 
-function dexResponse(symbol, name, mint) {
+function dexResponse(symbol, name, mint, chainId = "solana") {
+  const quotes = {
+    solana: {
+      address: "So11111111111111111111111111111111111111112",
+      symbol: "SOL",
+    },
+    base: {
+      address: "0x4200000000000000000000000000000000000006",
+      symbol: "WETH",
+    },
+  };
   return jsonResponse({
     pairs: [
       {
-        chainId: "solana",
+        chainId,
         liquidity: { usd: 9000 },
         baseToken: { address: mint, symbol, name },
-        quoteToken: {
-          address: "So11111111111111111111111111111111111111112",
-          symbol: "SOL",
-        },
+        quoteToken: quotes[chainId] || quotes.solana,
         priceUsd: "0.02",
         priceNative: "0.000133333333",
         marketCap: 66469,
@@ -682,5 +689,93 @@ describe("GET /clan-update", () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, skipped: "preview crawler" });
+  });
+});
+
+describe("POST /evm-webhook", () => {
+  it("posts a Base BUY alert for a tracked EVM wallet", async () => {
+    const wallet = "0x0cd99204838851F0A803389faC19b98FC439dbc6";
+    const mint = "0x1111111111111111111111111111111111111111";
+    const sent = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const href = String(url);
+      if (href.includes("dexscreener.com")) {
+        return dexResponse("MEME", "Meme", mint, "base");
+      }
+      if (href.includes("/leaderboard/clans")) {
+        return jsonResponse({
+          window: "24h",
+          entries: [
+            {
+              id: "e0767d97-696f-46aa-9db4-c5f10578691a",
+              label: "The Circle",
+              rank: 71,
+              pnl: -2508,
+              memberCount: 8,
+            },
+          ],
+        });
+      }
+      if (href.includes("api.telegram.org") && href.includes("sendMessage")) {
+        sent.push(JSON.parse(init.body));
+        return jsonResponse({ ok: true, result: { message_id: 9 } });
+      }
+      return jsonResponse({ ok: false }, 404);
+    };
+
+    const env = mockEnv();
+    env.DB._personas.set("1rokitg", {
+      handle: "1rokitg",
+      solana_address: "GJt9wpQS6oxpmazcnc1WYLdxQsVAMxsNGynVcLQHmWH3",
+      evm_address: wallet,
+      chat_id: "-1004446376533",
+      last_signature: null,
+    });
+
+    try {
+      const res = await worker.fetch(
+        new Request("https://fomo-tracker.pintosdsgn.workers.dev/evm-webhook", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "ADDRESS_ACTIVITY",
+            event: {
+              network: "BASE_MAINNET",
+              activity: [
+                {
+                  fromAddress: wallet,
+                  toAddress: "0x2222222222222222222222222222222222222222",
+                  hash: "0xevmswap1",
+                  value: 0.01,
+                  category: "external",
+                  rawContract: {},
+                },
+                {
+                  fromAddress: "0x3333333333333333333333333333333333333333",
+                  toAddress: wallet,
+                  hash: "0xevmswap1",
+                  value: 1000,
+                  category: "erc20",
+                  rawContract: { address: mint },
+                },
+              ],
+            },
+          }),
+        }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+      expect(body.notes[0]).toMatchObject({ skipped: false, reason: "alerted", alerts: 1 });
+      expect(sent).toHaveLength(1);
+      expect(sent[0].text).toContain("🎯 Member: @rokitgg");
+      expect(sent[0].text).toContain("📈 Action: BUY");
+      expect(sent[0].text).toContain("🧬 Base");
+      expect(sent[0].text).toContain("basescan.org");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
