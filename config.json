@@ -1,0 +1,32 @@
+{
+  "clanId": "e0767d97-696f-46aa-9db4-c5f10578691a",
+  "fomoRef": "1rokitg",
+  "handles": [
+    { "handle": "frejoshi", "name": "frejoshi" },
+    { "handle": "ChapLuvsNFTs", "name": "MOrt7997" },
+    { "handle": "cryptoaxeig", "name": "Cryptoaxe trades" },
+    { "handle": "InnerBigBass", "name": "InnerBigBass" },
+    { "handle": "Warrendeep", "name": "Warrendeep" },
+    { "handle": "pacophone007", "name": "pakoki" },
+    {
+      "handle": "1rokitg",
+      "name": "RokitG",
+      "telegramHandle": "rokitgg",
+      "solanaAddress": "GJt9wpQS6oxpmazcnc1WYLdxQsVAMxsNGynVcLQHmWH3",
+      "evmAddress": "0x0cd99204838851F0A803389faC19b98FC439dbc6",
+      "tracking": true
+    },
+    {
+      "id": "d1bceeb5-d74c-566a-b9ed-47e3e384b7f1",
+      "handle": "IssaTheCooker",
+      "name": "Issa",
+      "bio": "no crying le casino\ncomeback will be televised",
+      "banner": null,
+      "profilePicture": "https://prod-fomo-profile-pics.s3.amazonaws.com/93365150f8a3a641f8a688b5de73de94_small.jpg",
+      "twitter": null,
+      "solanaAddress": "8vjjczPfqznE2TLPekRyiySTGhX7e4MUVh5cYSHNtDuL",
+      "evmAddress": "0x33920d73156e9d9be3c1611402f696f21c27d367",
+      "tracking": true
+    }
+  ]
+}

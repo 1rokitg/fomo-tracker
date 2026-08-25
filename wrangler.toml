@@ -1,0 +1,30 @@
+name = "fomo-tracker"
+main = "index.js"
+compatibility_date = "2026-08-01"
+
+# D1 — dashboard suggested binding name "fomo_tracker"; the Worker reads env.DB.
+[[d1_databases]]
+binding = "DB"
+database_name = "fomo-tracker"
+database_id = "24a0ea6c-2c62-4abd-92c1-68a6fb4b56f0"
+
+[triggers]
+crons = ["* * * * *", "0 */6 * * *"]
+
+[vars]
+WORKER_URL = "https://fomo-tracker.pintosdsgn.workers.dev"
+TELEGRAM_CHAT_ID = "-1004446376533"
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+
+# Secrets (do NOT put real values here — set via `wrangler secret put <NAME>`):
+#   FOMOSCAN_KEY        - fsk_live_... from FomoScan
+#   TELEGRAM_BOT_TOKEN  - from @BotFather
+#   HELIUS_API_KEY      - from helius.dev (free tier works)
+#   HELIUS_WEBHOOK_SECRET - optional; set as the Helius auth header
