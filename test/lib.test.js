@@ -16,6 +16,8 @@ import {
   formatMoney,
   FOMOSCAN_BASE,
   heliusEvents,
+  ponderEvents,
+  ponderPollPlan,
   normalizeHandle,
   pageNeedsOlderTheses,
   pickClanFromBoard,
@@ -253,6 +255,46 @@ describe("formatClanAlert", () => {
     expect(text).toContain("🔭 Test ping");
     expect(text).toContain("fomo.family/r/1rokitg");
     expect(text).not.toContain("📈");
+  });
+
+  it("uses Base explorers for EVM swaps", () => {
+    const mint = "0x1111111111111111111111111111111111111111";
+    const wallet = "0x0cd99204838851F0A803389faC19b98FC439dbc6";
+    const text = formatClanAlert({
+      persona: { handle: "1rokitg", evmAddress: wallet },
+      evt: {
+        signature: "0xabcdefffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        chainId: "base",
+        events: {
+          swap: {
+            tokenInputs: [
+              {
+                mint: "0x4200000000000000000000000000000000000006",
+                tokenAmount: 0.01,
+              },
+            ],
+            tokenOutputs: [{ mint, tokenAmount: 1000 }],
+          },
+        },
+      },
+      clan,
+      isClanMember: true,
+      token: {
+        mint,
+        symbol: "MEME",
+        name: "Meme",
+        mcap: 50000,
+        chainId: "base",
+        nativePriceUsd: 2000,
+      },
+    });
+    expect(text).toContain("🟢 Meme | MEME 🧬 Base");
+    expect(text).toContain("📈 Action: BUY");
+    expect(text).toContain("💰 Amount: $20  |  0.01 ETH");
+    expect(text).toContain("basescan.org/tx/");
+    expect(text).toContain("basescan.org/address/");
+    expect(text).toContain("fomo.family/tokens/base/");
+    expect(text).not.toContain("solscan.io");
   });
 });
 
@@ -577,6 +619,55 @@ describe("heliusEvents", () => {
       "TRANSFER",
     );
     expect(heliusEvents({ type: "UNKNOWN" })[0].type).toBe("UNKNOWN");
+  });
+});
+
+describe("ponderEvents", () => {
+  const wallet = "0x0cd99204838851F0A803389faC19b98FC439dbc6";
+  const meme = "0x1111111111111111111111111111111111111111";
+  const weth = "0x4200000000000000000000000000000000000006";
+
+  it("turns a Ponder Base swap row into a BUY", () => {
+    const events = ponderEvents({
+      swaps: [
+        {
+          id: "8453:0xdead",
+          chainId: 8453,
+          hash: "0xdead",
+          wallet,
+          tokenIn: weth,
+          tokenInAmount: "0.01",
+          tokenOut: meme,
+          tokenOutAmount: "1000",
+        },
+      ],
+    });
+    const evt = events.find((e) => e.feePayer === wallet.toLowerCase());
+    expect(evt).toBeTruthy();
+    expect(evt.chainId).toBe("base");
+    expect(evt.signature).toBe("0xdead");
+    expect(swapSide(evt)).toBe("BUY");
+    expect(swapFocus(evt).token.mint).toBe(meme);
+  });
+});
+
+describe("ponderPollPlan", () => {
+  const items = [{ id: "a" }, { id: "b" }];
+
+  it("primes on the first page and does not replay", () => {
+    expect(ponderPollPlan(items, null)).toEqual({
+      rows: [],
+      latest: "b",
+      prime: true,
+    });
+  });
+
+  it("returns new rows after a cursor", () => {
+    expect(ponderPollPlan(items, "a")).toEqual({
+      rows: items,
+      latest: "b",
+      prime: false,
+    });
   });
 });
 

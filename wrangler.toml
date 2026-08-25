@@ -28,3 +28,6 @@ invocation_logs = true
 #   TELEGRAM_BOT_TOKEN  - from @BotFather
 #   HELIUS_API_KEY      - from helius.dev (free tier works)
 #   HELIUS_WEBHOOK_SECRET - optional; set as the Helius auth header
+#   PONDER_URL          - Ponder GraphQL origin, e.g. http://localhost:42069
+#   PONDER_WEBHOOK_SECRET - optional; Bearer token for POST /evm-webhook
+#   PONDER_QUERY_SECRET - optional; Bearer token when querying Ponder

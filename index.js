@@ -2,6 +2,9 @@
  * fomo-tracker
  *
  * Swap feed is a Helius enhanced webhook on WORKER_URL/helius-webhook.
+ * EVM swaps are indexed by Ponder (ponder/) across Base, Ethereum, and BNB
+ * for the roster wallet set. The Worker pulls new rows from PONDER_URL/graphql
+ * (cron + GET /evm) or accepts POST /evm-webhook with Ponder swap records.
  * Thesis feed is FomoScan GET /v2/thesis, filtered to config.json members.
  *
  * Clan member handles live in config.json (FomoScan's clan board has no
@@ -11,15 +14,17 @@
  * Alerts are clan alerts: name / rank / 24h combined PnL come from
  * GET /v2/leaderboard/clans?window=24h keyed by config.clanId.
  *
- * FomoScan identity is handle <-> wallet. Swaps come from Helius.
- * Theses come from FomoScan's thesis feed (not on-chain).
+ * FomoScan identity is handle <-> wallet. Solana swaps come from Helius.
+ * EVM swaps come from Ponder. Theses come from FomoScan.
  *
  * Routes:
  *   POST /helius-webhook — Helius enhanced SWAP webhooks
+ *   POST /evm-webhook    — Ponder-indexed EVM swaps (push)
  *   GET  /setup          — Telegram polling + register Helius webhook on WORKER_URL
  *   GET  /test           — sample clan alert (no swap)
  *   GET  /test-thesis    — sample thesis alert
  *   GET  /theses         — run one thesis poll now (same as cron)
+ *   GET  /evm            — pull new Ponder swaps now (same as cron)
  *   GET  /replay         — inspect a signature (?sig=…&send=1 to also post)
  *   GET  /status         — Helius webhook + roster diagnostics (no Telegram)
  *   GET  /clan-update    — post rank / 24h PnL / member list (same as 6h cron)
@@ -47,6 +52,11 @@ import {
   asSwapEvent,
   rpcToEnhanced,
   heliusEvents,
+  ponderEvents,
+  ponderPollPlan,
+  ponderSwapToEvent,
+  fetchPonderSwaps,
+  normalizeEvm,
   normalizeHandle,
   pageNeedsOlderTheses,
   primedThesisKey,
@@ -68,6 +78,9 @@ export default {
       if (request.method === "POST" && url.pathname === "/helius-webhook") {
         return await handleHeliusWebhook(request, env);
       }
+      if (request.method === "POST" && url.pathname === "/evm-webhook") {
+        return await handleEvmWebhook(request, env);
+      }
       if (request.method === "GET" && url.pathname === "/setup") {
         return await handleSetup(request, env);
       }
@@ -79,6 +92,9 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/theses") {
         return await handleThesesPoll(request, env);
+      }
+      if (request.method === "GET" && url.pathname === "/evm") {
+        return await handleEvmPoll(request, env);
       }
       if (request.method === "GET" && url.pathname === "/replay") {
         return await handleReplay(request, env);
@@ -114,6 +130,11 @@ async function pollOnce(env) {
   await ensureTelegramPolling(env);
   await syncConfigHandles(env);
   await syncHeliusWebhook(env);
+  try {
+    await pollEvm(env);
+  } catch (err) {
+    console.error("evm poll failed", err);
+  }
   try {
     await pollTheses(env);
   } catch (err) {
@@ -193,12 +214,12 @@ async function upsertTrackedHandle(
         console.error("fomo_id backfill skipped", err);
       }
     }
-    if (fallbackAddress) {
+    if (fallbackAddress || fallbackEvm) {
       try {
         await env.DB.prepare(
-          "UPDATE personas SET solana_address = ?, evm_address = COALESCE(?, evm_address) WHERE handle = ?",
+          "UPDATE personas SET solana_address = COALESCE(?, solana_address), evm_address = COALESCE(?, evm_address) WHERE handle = ?",
         )
-          .bind(fallbackAddress, fallbackEvm, handle)
+          .bind(fallbackAddress || null, normalizeEvm(fallbackEvm) || fallbackEvm || null, handle)
           .run();
       } catch (err) {
         console.error("wallet backfill skipped", err);
@@ -223,11 +244,13 @@ async function upsertTrackedHandle(
     }
   }
 
-  const solanaAddress = persona?.solanaAddress || fallbackAddress;
-  if (!solanaAddress) {
+  const solanaAddress = persona?.solanaAddress || fallbackAddress || null;
+  const evmAddress =
+    normalizeEvm(persona?.evmAddress || fallbackEvm) || fallbackEvm || null;
+  if (!solanaAddress && !evmAddress) {
     if (!persona)
       return { status: "error", handle, reason: "not found on FomoScan" };
-    return { status: "error", handle, reason: "no verified Solana wallet" };
+    return { status: "error", handle, reason: "no verified wallet" };
   }
 
   const dest = alertChatId(env) || "";
@@ -240,7 +263,7 @@ async function upsertTrackedHandle(
       persona?.id ?? fallbackFomoId ?? null,
       persona?.name ?? null,
       solanaAddress,
-      persona?.evmAddress ?? fallbackEvm ?? null,
+      evmAddress,
       dest,
       new Date().toISOString(),
     )
@@ -416,6 +439,23 @@ async function handleThesesPoll(request, env) {
   }
   await syncConfigHandles(env, { notify: false });
   const result = await pollTheses(env);
+  return new Response(JSON.stringify({ ok: true, ...result }, null, 2), {
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+async function handleEvmPoll(request, env) {
+  const ua = request.headers.get("user-agent") || "";
+  if (/TelegramBot|facebookexternalhit|Twitterbot/i.test(ua)) {
+    return new Response(
+      JSON.stringify({ ok: true, skipped: "preview crawler" }),
+      {
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }
+  await syncConfigHandles(env, { notify: false });
+  const result = await pollEvm(env);
   return new Response(JSON.stringify({ ok: true, ...result }, null, 2), {
     headers: { "Content-Type": "application/json" },
   });
@@ -1233,8 +1273,133 @@ async function handleHeliusWebhook(request, env) {
   );
 }
 
+async function handleEvmWebhook(request, env) {
+  if (env.PONDER_WEBHOOK_SECRET) {
+    const auth = request.headers.get("Authorization") || "";
+    if (auth !== `Bearer ${env.PONDER_WEBHOOK_SECRET}`) {
+      return new Response("unauthorized", { status: 401 });
+    }
+  }
+
+  const payload = await request.json();
+  const events = ponderEvents(payload);
+  let clan = { found: false };
+  try {
+    clan = (await fetchClanSnapshot(env)) || clan;
+  } catch (err) {
+    console.error("clan snapshot failed", err);
+  }
+
+  const notes = [];
+  for (const evt of events) {
+    try {
+      const dispatched = await dispatchSwapAlert(env, evt, clan);
+      notes.push({
+        skipped: dispatched.alerts === 0,
+        reason: dispatched.reason || "alerted",
+        alerts: dispatched.alerts,
+        type: evt.type || "SWAP",
+        signature: txSignature(evt),
+        chainId: evt.chainId || null,
+        side: swapSide(evt),
+        matched: dispatched.matched || [],
+      });
+    } catch (err) {
+      console.error("evm swap failed", txSignature(evt), err);
+      notes.push({
+        skipped: true,
+        reason: err?.message || "error",
+        signature: txSignature(evt),
+      });
+    }
+  }
+
+  console.log("evm-webhook", { count: events.length, notes });
+  return new Response(
+    JSON.stringify({ ok: true, count: events.length, notes }),
+    {
+      headers: { "Content-Type": "application/json" },
+    },
+  );
+}
+
+async function ponderCursor(env) {
+  try {
+    const row = await env.DB.prepare(
+      "SELECT ponder_after FROM poll_state WHERE id = 1",
+    ).first();
+    return row?.ponder_after || null;
+  } catch {
+    return null;
+  }
+}
+
+async function setPonderCursor(env, id) {
+  try {
+    await env.DB.prepare(
+      "ALTER TABLE poll_state ADD COLUMN ponder_after TEXT",
+    ).run();
+  } catch {
+    // already exists
+  }
+  await env.DB.prepare("UPDATE poll_state SET ponder_after = ? WHERE id = 1")
+    .bind(id)
+    .run();
+}
+
+async function pollEvm(env) {
+  if (!env.PONDER_URL) return { skipped: "no_ponder_url", notes: [] };
+
+  let clan = { found: false };
+  try {
+    clan = (await fetchClanSnapshot(env)) || clan;
+  } catch (err) {
+    console.error("clan snapshot failed", err);
+  }
+
+  const after = await ponderCursor(env);
+  const items = await fetchPonderSwaps(env, { after });
+  const plan = ponderPollPlan(items, after);
+  if (plan.latest && plan.latest !== after) {
+    await setPonderCursor(env, plan.latest);
+  }
+  if (plan.prime) {
+    console.log("evm-poll", { primed: true, latest: plan.latest });
+    return { primed: true, latest: plan.latest, notes: [] };
+  }
+
+  const notes = [];
+  let alerts = 0;
+  for (const row of plan.rows) {
+    const evt = ponderSwapToEvent(row);
+    if (!swapFocus(evt)?.token?.mint) {
+      notes.push({ skipped: true, reason: "not_a_swap", id: row.id });
+      continue;
+    }
+    const dispatched = await dispatchSwapAlert(env, evt, clan);
+    alerts += dispatched.alerts || 0;
+    notes.push({
+      id: row.id,
+      signature: row.hash,
+      skipped: dispatched.alerts === 0,
+      reason: dispatched.reason || "alerted",
+      matched: dispatched.matched || [],
+    });
+  }
+
+  console.log("evm-poll", { alerts, notes });
+  return { alerts, notes };
+}
+
 async function rememberWebhook(env, note) {
   try {
+    for (const col of ["last_webhook_at", "last_webhook_note"]) {
+      try {
+        await env.DB.prepare(`ALTER TABLE poll_state ADD COLUMN ${col} TEXT`).run();
+      } catch {
+        // Column already exists on newer D1 schemas.
+      }
+    }
     await env.DB.prepare(
       "UPDATE poll_state SET last_webhook_at = ?, last_webhook_note = ? WHERE id = 1",
     )
@@ -1344,14 +1509,32 @@ async function dispatchSwapAlert(env, evt, clan) {
   if (!touched.length)
     return { alerts: 0, reason: "no_touched_accounts", matched: [] };
 
-  const placeholders = touched.map(() => "?").join(",");
-  // last_signature is optional — older D1 schemas may not have the column yet.
+  const evmTouched = touched.map(normalizeEvm).filter(Boolean);
+  const solTouched = touched.filter((a) => !normalizeEvm(a));
+  const clauses = [];
+  const binds = [];
+  if (solTouched.length) {
+    clauses.push(
+      `solana_address IN (${solTouched.map(() => "?").join(",")})`,
+    );
+    binds.push(...solTouched);
+  }
+  if (evmTouched.length) {
+    clauses.push(
+      `lower(evm_address) IN (${evmTouched.map(() => "?").join(",")})`,
+    );
+    binds.push(...evmTouched);
+  }
+  if (!clauses.length)
+    return { alerts: 0, reason: "no_touched_accounts", matched: [] };
+
   let results = [];
   try {
     ({ results } = await env.DB.prepare(
-      `SELECT handle, chat_id, solana_address FROM personas WHERE solana_address IN (${placeholders})`,
+      `SELECT handle, chat_id, solana_address, evm_address, last_signature
+       FROM personas WHERE ${clauses.join(" OR ")}`,
     )
-      .bind(...touched)
+      .bind(...binds)
       .all());
   } catch (err) {
     console.error("persona lookup failed", err);
@@ -1403,7 +1586,7 @@ async function alertOnSwap(env, persona, evt, clan) {
   const dest = alertChatId(env) || persona.chat_id;
   let token = null;
   try {
-    token = await fetchDexToken(swapFocusMint(evt));
+    token = await fetchDexToken(swapFocusMint(evt), fetch, evt.chainId || "sol");
   } catch (err) {
     console.error("token lookup failed", err);
   }

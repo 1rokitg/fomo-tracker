@@ -10,7 +10,56 @@ const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 const USD1 = "USD1ttGY1N17NEEHlmELoaybftRBUSerhqYiQzvEmuB";
 const PYUSD = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
-const QUOTE_MINTS = new Set([WSOL, USDC, USDT, USD1, PYUSD]);
+const ETH_NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const WETH_ETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
+const WETH_BASE = "0x4200000000000000000000000000000000000006";
+const WBNB = "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c";
+const USDC_ETH = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
+const USDC_BASE = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+const USDT_ETH = "0xdac17f958d2ee523a2206206994597c13d831ec7";
+const USDT_BNB = "0x55d398326f99059ff775485246999027b3197955";
+const QUOTE_MINTS = new Set([
+  WSOL,
+  USDC,
+  USDT,
+  USD1,
+  PYUSD,
+  ETH_NATIVE,
+  WETH_ETH,
+  WETH_BASE,
+  WBNB,
+  USDC_ETH,
+  USDC_BASE,
+  USDT_ETH,
+  USDT_BNB,
+]);
+
+export const EVM_CHAINS = [
+  {
+    id: "base",
+    chainId: 8453,
+    explorerTx: (hash) => `https://basescan.org/tx/${hash}`,
+    explorerAddr: (addr) => `https://basescan.org/address/${addr}`,
+    wrapped: WETH_BASE,
+    nativeSymbol: "ETH",
+  },
+  {
+    id: "ethereum",
+    chainId: 1,
+    explorerTx: (hash) => `https://etherscan.io/tx/${hash}`,
+    explorerAddr: (addr) => `https://etherscan.io/address/${addr}`,
+    wrapped: WETH_ETH,
+    nativeSymbol: "ETH",
+  },
+  {
+    id: "bsc",
+    chainId: 56,
+    explorerTx: (hash) => `https://bscscan.com/tx/${hash}`,
+    explorerAddr: (addr) => `https://bscscan.com/address/${addr}`,
+    wrapped: WBNB,
+    nativeSymbol: "BNB",
+  },
+];
 
 export function fomoscanHeaders(env) {
   return { Authorization: `Bearer ${env.FOMOSCAN_KEY}` };
@@ -110,8 +159,41 @@ export function clanHeadline(clan) {
   return bits.join(" · ");
 }
 
+export function normalizeEvm(addr) {
+  const s = String(addr || "").trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(s)) return null;
+  return s.toLowerCase();
+}
+
+export function isEvmAddress(addr) {
+  return Boolean(normalizeEvm(addr));
+}
+
+export function canonMint(mint) {
+  return normalizeEvm(mint) || mint || null;
+}
+
 function isQuoteMint(mint) {
-  return Boolean(mint) && QUOTE_MINTS.has(mint);
+  const key = canonMint(mint);
+  return Boolean(key) && QUOTE_MINTS.has(key);
+}
+
+function isNativeQuoteMint(mint) {
+  const key = canonMint(mint);
+  return key === WSOL || key === ETH_NATIVE || key === WETH_ETH || key === WETH_BASE || key === WBNB;
+}
+
+export function evmChain(network) {
+  const n = Number(network);
+  if (Number.isFinite(n) && n > 0) {
+    return EVM_CHAINS.find((c) => c.chainId === n) || null;
+  }
+  const slugs = chainSlugs(network);
+  return EVM_CHAINS.find((c) => c.id === slugs.dex || c.id === slugs.fomo) || null;
+}
+
+export function chainSlugFromId(chainId) {
+  return evmChain(chainId)?.id || chainSlugs(chainId).dex || "base";
 }
 
 function swapMints(tokens, native) {
@@ -313,6 +395,14 @@ const QUOTE_META = {
   [USDT]: { symbol: "USDT", name: "Tether" },
   [USD1]: { symbol: "USD1", name: "USD1" },
   [PYUSD]: { symbol: "PYUSD", name: "PayPal USD" },
+  [ETH_NATIVE]: { symbol: "ETH", name: "Ether" },
+  [WETH_ETH]: { symbol: "ETH", name: "Ether" },
+  [WETH_BASE]: { symbol: "ETH", name: "Ether" },
+  [WBNB]: { symbol: "BNB", name: "BNB" },
+  [USDC_ETH]: { symbol: "USDC", name: "USD Coin" },
+  [USDC_BASE]: { symbol: "USDC", name: "USD Coin" },
+  [USDT_ETH]: { symbol: "USDT", name: "Tether" },
+  [USDT_BNB]: { symbol: "USDT", name: "Tether" },
 };
 
 export function escapeHtml(s) {
@@ -336,7 +426,7 @@ export function formatMoney(n) {
 }
 
 function quoteSymbol(mint) {
-  return QUOTE_META[mint]?.symbol || null;
+  return QUOTE_META[canonMint(mint)]?.symbol || null;
 }
 
 function fmtQty(n) {
@@ -470,11 +560,12 @@ async function fetchHolderCount(mint, chain, fetchImpl) {
 
 export async function fetchDexToken(mint, fetchImpl = fetch, network = "sol") {
   if (!mint) return null;
-  if (isQuoteMint(mint)) {
+  const key = canonMint(mint) || mint;
+  if (isQuoteMint(key)) {
     return {
-      ...emptyDexToken(mint),
-      ...QUOTE_META[mint],
-      priceUsd: mint === WSOL ? null : 1,
+      ...emptyDexToken(key),
+      ...QUOTE_META[key],
+      priceUsd: isNativeQuoteMint(key) ? null : 1,
     };
   }
   const want = chainSlugs(network).dex;
@@ -490,17 +581,24 @@ export async function fetchDexToken(mint, fetchImpl = fetch, network = "sol") {
     const base = pair.baseToken?.address === mint ? pair.baseToken : pair.quoteToken || pair.baseToken;
     const priceUsd = Number(pair.priceUsd) || null;
     const priceNative = Number(pair.priceNative) || null;
-    const quoteAddr = pair.quoteToken?.address || "";
+    const quoteAddr = canonMint(pair.quoteToken?.address || "") || "";
     const quoteIsSol = quoteAddr === WSOL || /^sol$/i.test(pair.quoteToken?.symbol || "");
-    const solPriceUsd =
-      quoteIsSol && priceUsd && priceNative && priceNative > 0 ? priceUsd / priceNative : null;
+    const quoteIsNative =
+      quoteIsSol ||
+      quoteAddr === WETH_ETH ||
+      quoteAddr === WETH_BASE ||
+      quoteAddr === WBNB ||
+      /^(eth|weth|bnb|wbnb)$/i.test(pair.quoteToken?.symbol || "");
+    const nativePriceUsd =
+      quoteIsNative && priceUsd && priceNative && priceNative > 0 ? priceUsd / priceNative : null;
     const holders = await fetchHolderCount(mint, pair.chainId || want, fetchImpl);
     return {
       mint,
       symbol: base?.symbol || pair.baseToken?.symbol || null,
       name: base?.name || pair.baseToken?.name || null,
       priceUsd,
-      solPriceUsd,
+      solPriceUsd: nativePriceUsd,
+      nativePriceUsd,
       mcap: pair.marketCap || pair.fdv || null,
       liquidity: Number(pair.liquidity?.usd) || null,
       pairCreatedAt: Number(pair.pairCreatedAt) || null,
@@ -517,11 +615,11 @@ export async function fetchDexToken(mint, fetchImpl = fetch, network = "sol") {
 function tradeUsd(focus, token) {
   const quote = focus?.quote;
   const qAmt = Number(quote?.tokenAmount);
-  if (quote?.mint === WSOL && Number.isFinite(qAmt) && qAmt > 0) {
-    const solPx = Number(token?.solPriceUsd);
-    if (Number.isFinite(solPx) && solPx > 0) return qAmt * solPx;
+  if (isNativeQuoteMint(quote?.mint) && Number.isFinite(qAmt) && qAmt > 0) {
+    const nativePx = Number(token?.nativePriceUsd ?? token?.solPriceUsd);
+    if (Number.isFinite(nativePx) && nativePx > 0) return qAmt * nativePx;
   }
-  if (quote && quote.mint !== WSOL) {
+  if (quote && !isNativeQuoteMint(quote.mint) && isQuoteMint(quote.mint)) {
     const n = Number(quote.tokenAmount);
     if (Number.isFinite(n) && n > 0) return n;
   }
@@ -562,8 +660,13 @@ function htmlLink(url, label) {
 function linkRow({ sig, mint, network } = {}) {
   const slugs = chainSlugs(network);
   const bits = [];
-  if (sig && slugs.fomo === "solana") {
-    bits.push(htmlLink(`https://solscan.io/tx/${sig}`, "Scan"));
+  if (sig) {
+    if (slugs.fomo === "solana") {
+      bits.push(htmlLink(`https://solscan.io/tx/${sig}`, "Scan"));
+    } else {
+      const chain = evmChain(network);
+      if (chain) bits.push(htmlLink(chain.explorerTx(sig), "Scan"));
+    }
   }
   if (mint) {
     bits.push(htmlLink(`https://fomo.family/tokens/${slugs.fomo}/${mint}`, "Fomo"));
@@ -616,8 +719,10 @@ export function formatClanAlert({ persona, evt, clan, isClanMember, token } = {}
   const symbol = token?.symbol || (mint ? short(mint) : null);
   const name = token?.name && token.name !== token.symbol ? token.name : null;
   const isTest = /test ping/i.test(evt?.description || "");
-  const wallet = persona?.solana_address || persona?.solanaAddress || null;
-  const network = token?.chainId || "sol";
+  const solWallet = persona?.solana_address || persona?.solanaAddress || null;
+  const evmWallet = normalizeEvm(persona?.evm_address || persona?.evmAddress);
+  const network = token?.chainId || evt?.chainId || "sol";
+  const wallet = evmChain(network) ? evmWallet || solWallet : solWallet || evmWallet;
 
   const lines = [`📣 <b>${escapeHtml(clan?.found ? clan.name : "Clan")}</b>`, clanSubline(clan), ""];
 
@@ -633,9 +738,11 @@ export function formatClanAlert({ persona, evt, clan, isClanMember, token } = {}
 
   const memberBits = [`🎯 Member: ${who}`];
   if (!isTest && wallet) {
-    memberBits.push(
-      `(${htmlLink(`https://solscan.io/address/${wallet}`, escapeHtml(short(wallet)))})`,
-    );
+    const chain = evmChain(network);
+    const href = chain
+      ? chain.explorerAddr(wallet)
+      : `https://solscan.io/address/${wallet}`;
+    memberBits.push(`(${htmlLink(href, escapeHtml(short(wallet)))})`);
   }
   lines.push(memberBits.join(" "));
   if (isTest) {
@@ -836,6 +943,99 @@ export function heliusEvents(payload) {
   return [payload];
 }
 
+/** Ponder GraphQL `swaps.items` or a `{ swaps: [...] }` webhook body. */
+export function ponderSwapRows(payload) {
+  if (payload == null) return [];
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload.swaps)) return payload.swaps;
+  if (Array.isArray(payload.items)) return payload.items;
+  if (Array.isArray(payload.data?.swaps?.items)) return payload.data.swaps.items;
+  if (Array.isArray(payload.data?.swaps)) return payload.data.swaps;
+  if (payload.id && (payload.hash || payload.wallet)) return [payload];
+  return [];
+}
+
+/**
+ * Map a Ponder-indexed swap row onto the same enhanced-tx shape Helius uses
+ * so formatClanAlert / dispatchSwapAlert stay shared.
+ */
+export function ponderSwapToEvent(row) {
+  if (!row) return null;
+  const wallet = normalizeEvm(row.wallet || row.from);
+  const hash = row.hash || row.transactionHash || row.id;
+  const chainId = chainSlugFromId(row.chainId || row.chain || row.network);
+  const tokenTransfers = [];
+  const tokenIn = canonMint(row.tokenIn || row.token_in);
+  const tokenOut = canonMint(row.tokenOut || row.token_out);
+  const inAmt = Number(row.tokenInAmount ?? row.token_in_amount);
+  const outAmt = Number(row.tokenOutAmount ?? row.token_out_amount);
+  if (wallet && tokenIn && Number.isFinite(inAmt) && inAmt > 0) {
+    tokenTransfers.push({ fromUserAccount: wallet, mint: tokenIn, tokenAmount: inAmt });
+  }
+  if (wallet && tokenOut && Number.isFinite(outAmt) && outAmt > 0) {
+    tokenTransfers.push({ toUserAccount: wallet, mint: tokenOut, tokenAmount: outAmt });
+  }
+  return asSwapEvent({
+    type: "UNKNOWN",
+    signature: hash,
+    chainId,
+    feePayer: wallet,
+    tokenTransfers,
+  });
+}
+
+export function ponderEvents(payload) {
+  return ponderSwapRows(payload)
+    .map(ponderSwapToEvent)
+    .filter((evt) => swapFocus(evt)?.token?.mint);
+}
+
+/** First Ponder page stores a cursor and does not replay history. */
+export function ponderPollPlan(items, lastId) {
+  const rows = ponderSwapRows(items);
+  if (!rows.length) return { rows: [], latest: lastId || null, prime: false };
+  const latest = rows[rows.length - 1]?.id || rows[rows.length - 1]?.hash || lastId;
+  if (!lastId) return { rows: [], latest, prime: true };
+  return { rows, latest, prime: false };
+}
+
+export async function fetchPonderSwaps(env, { after, fetchImpl = fetch } = {}) {
+  const base = String(env.PONDER_URL || "").replace(/\/$/, "");
+  if (!base) return [];
+  const headers = { "Content-Type": "application/json" };
+  if (env.PONDER_QUERY_SECRET) {
+    headers.Authorization = `Bearer ${env.PONDER_QUERY_SECRET}`;
+  }
+  const fields = `id chainId hash wallet timestamp tokenIn tokenInAmount tokenOut tokenOutAmount`;
+  const query = after
+    ? `query Swaps($after: String) {
+        swaps(where: { id_gt: $after }, orderBy: "id", orderDirection: "asc", limit: 50) {
+          items { ${fields} }
+        }
+      }`
+    : `query Swaps {
+        swaps(orderBy: "id", orderDirection: "desc", limit: 1) {
+          items { ${fields} }
+        }
+      }`;
+  const res = await fetchImpl(`${base}/graphql`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ query, variables: after ? { after } : {} }),
+  });
+  if (!res.ok) {
+    console.error("ponder graphql failed", res.status, await res.text());
+    return [];
+  }
+  const json = await res.json();
+  if (json?.errors) {
+    console.error("ponder graphql errors", json.errors);
+    return [];
+  }
+  const rows = ponderSwapRows(json);
+  return after ? rows : rows.slice().reverse();
+}
+
 export function collectTouchedAccounts(evt) {
   const set = new Set();
   if (evt?.feePayer) set.add(evt.feePayer);
@@ -854,7 +1054,7 @@ export function collectTouchedAccounts(evt) {
     if (t?.fromUserAccount) set.add(t.fromUserAccount);
     if (t?.toUserAccount) set.add(t.toUserAccount);
   }
-  return [...set];
+  return [...set].map((a) => normalizeEvm(a) || a);
 }
 
 export function txSignature(evt) {
