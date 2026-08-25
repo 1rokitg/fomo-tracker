@@ -37,8 +37,7 @@ const QUOTE_MINTS = new Set([
 export const EVM_CHAINS = [
   {
     id: "base",
-    alchemy: "base-mainnet",
-    network: "BASE_MAINNET",
+    chainId: 8453,
     explorerTx: (hash) => `https://basescan.org/tx/${hash}`,
     explorerAddr: (addr) => `https://basescan.org/address/${addr}`,
     wrapped: WETH_BASE,
@@ -46,8 +45,7 @@ export const EVM_CHAINS = [
   },
   {
     id: "ethereum",
-    alchemy: "eth-mainnet",
-    network: "ETH_MAINNET",
+    chainId: 1,
     explorerTx: (hash) => `https://etherscan.io/tx/${hash}`,
     explorerAddr: (addr) => `https://etherscan.io/address/${addr}`,
     wrapped: WETH_ETH,
@@ -55,8 +53,7 @@ export const EVM_CHAINS = [
   },
   {
     id: "bsc",
-    alchemy: "bnb-mainnet",
-    network: "BNB_MAINNET",
+    chainId: 56,
     explorerTx: (hash) => `https://bscscan.com/tx/${hash}`,
     explorerAddr: (addr) => `https://bscscan.com/address/${addr}`,
     wrapped: WBNB,
@@ -187,11 +184,16 @@ function isNativeQuoteMint(mint) {
 }
 
 export function evmChain(network) {
+  const n = Number(network);
+  if (Number.isFinite(n) && n > 0) {
+    return EVM_CHAINS.find((c) => c.chainId === n) || null;
+  }
   const slugs = chainSlugs(network);
-  return (
-    EVM_CHAINS.find((c) => c.id === slugs.dex || c.id === slugs.fomo || c.network === String(network || "").toUpperCase()) ||
-    null
-  );
+  return EVM_CHAINS.find((c) => c.id === slugs.dex || c.id === slugs.fomo) || null;
+}
+
+export function chainSlugFromId(chainId) {
+  return evmChain(chainId)?.id || chainSlugs(chainId).dex || "base";
 }
 
 function swapMints(tokens, native) {
@@ -941,172 +943,97 @@ export function heliusEvents(payload) {
   return [payload];
 }
 
-export function alchemyNetworkToChain(network) {
-  const raw = String(network || "")
-    .trim()
-    .toUpperCase()
-    .replace(/[\s-]+/g, "_");
-  const row = EVM_CHAINS.find((c) => c.network === raw || c.id === String(network || "").toLowerCase());
-  return row?.id || "base";
+/** Ponder GraphQL `swaps.items` or a `{ swaps: [...] }` webhook body. */
+export function ponderSwapRows(payload) {
+  if (payload == null) return [];
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload.swaps)) return payload.swaps;
+  if (Array.isArray(payload.items)) return payload.items;
+  if (Array.isArray(payload.data?.swaps?.items)) return payload.data.swaps.items;
+  if (Array.isArray(payload.data?.swaps)) return payload.data.swaps;
+  if (payload.id && (payload.hash || payload.wallet)) return [payload];
+  return [];
 }
 
-function unwrapAlchemyActivity(payload) {
-  if (!payload) return { network: null, activity: [] };
-  if (Array.isArray(payload)) return { network: null, activity: payload };
-  const event = payload.event || payload;
-  const activity =
-    event.activity ||
-    payload.activity ||
-    (Array.isArray(event.transfers) ? event.transfers : null) ||
-    payload.transfers ||
-    [];
-  return {
-    network: event.network || payload.network || payload.chain || null,
-    activity: Array.isArray(activity) ? activity : [],
-  };
-}
-
-function transferHash(t) {
-  return t?.hash || t?.transactionHash || t?.txnHash || null;
-}
-
-function transferAmount(t) {
-  if (t?.value != null && Number.isFinite(Number(t.value))) return Number(t.value);
-  const raw = t?.rawContract?.value;
-  const decimals = Number.parseInt(t?.rawContract?.decimal || t?.rawContract?.decimals || "18", 16);
-  if (raw && String(raw).startsWith("0x") && Number.isFinite(decimals)) {
-    const n = Number.parseInt(raw, 16) / 10 ** decimals;
-    return Number.isFinite(n) ? n : 0;
-  }
-  return 0;
-}
-
-function transferMint(t, chainId) {
-  const addr = normalizeEvm(t?.rawContract?.address || t?.rawContractAddress || t?.contractAddress);
-  if (addr) return addr;
-  const meta = EVM_CHAINS.find((c) => c.id === chainId);
-  return meta?.wrapped || ETH_NATIVE;
-}
-
-export function alchemyTxToEnhanced(transfers, owner, chainId, hash) {
-  const me = normalizeEvm(owner);
+/**
+ * Map a Ponder-indexed swap row onto the same enhanced-tx shape Helius uses
+ * so formatClanAlert / dispatchSwapAlert stay shared.
+ */
+export function ponderSwapToEvent(row) {
+  if (!row) return null;
+  const wallet = normalizeEvm(row.wallet || row.from);
+  const hash = row.hash || row.transactionHash || row.id;
+  const chainId = chainSlugFromId(row.chainId || row.chain || row.network);
   const tokenTransfers = [];
-  for (const t of transfers || []) {
-    const from = normalizeEvm(t.from || t.fromAddress);
-    const to = normalizeEvm(t.to || t.toAddress);
-    const mint = transferMint(t, chainId);
-    const amt = transferAmount(t);
-    if (!me || !amt || !mint) continue;
-    if (from === me) tokenTransfers.push({ fromUserAccount: me, mint, tokenAmount: amt });
-    if (to === me) tokenTransfers.push({ toUserAccount: me, mint, tokenAmount: amt });
+  const tokenIn = canonMint(row.tokenIn || row.token_in);
+  const tokenOut = canonMint(row.tokenOut || row.token_out);
+  const inAmt = Number(row.tokenInAmount ?? row.token_in_amount);
+  const outAmt = Number(row.tokenOutAmount ?? row.token_out_amount);
+  if (wallet && tokenIn && Number.isFinite(inAmt) && inAmt > 0) {
+    tokenTransfers.push({ fromUserAccount: wallet, mint: tokenIn, tokenAmount: inAmt });
   }
-  return {
+  if (wallet && tokenOut && Number.isFinite(outAmt) && outAmt > 0) {
+    tokenTransfers.push({ toUserAccount: wallet, mint: tokenOut, tokenAmount: outAmt });
+  }
+  return asSwapEvent({
     type: "UNKNOWN",
     signature: hash,
     chainId,
-    feePayer: me,
+    feePayer: wallet,
     tokenTransfers,
-  };
+  });
 }
 
-/** Turn Alchemy Address Activity (or getAssetTransfers rows) into swap-shaped events. */
-export function alchemyActivityToSwaps(payload) {
-  const { network, activity } = unwrapAlchemyActivity(payload);
-  const chainId = alchemyNetworkToChain(network);
-  const byHash = new Map();
-  for (const t of activity) {
-    const hash = transferHash(t);
-    if (!hash) continue;
-    if (!byHash.has(hash)) byHash.set(hash, []);
-    byHash.get(hash).push(t);
-  }
-
-  const events = [];
-  for (const [hash, transfers] of byHash) {
-    const owners = new Set();
-    for (const t of transfers) {
-      const from = normalizeEvm(t.from || t.fromAddress);
-      const to = normalizeEvm(t.to || t.toAddress);
-      if (from) owners.add(from);
-      if (to) owners.add(to);
-    }
-    for (const owner of owners) {
-      const raw = alchemyTxToEnhanced(transfers, owner, chainId, hash);
-      const evt = asSwapEvent(raw);
-      if (swapFocus(evt)?.token?.mint) events.push(evt);
-    }
-  }
-  return events;
+export function ponderEvents(payload) {
+  return ponderSwapRows(payload)
+    .map(ponderSwapToEvent)
+    .filter((evt) => swapFocus(evt)?.token?.mint);
 }
 
-export function uniqueTxHashes(transfers) {
-  const hashes = [];
-  const seen = new Set();
-  for (const t of transfers || []) {
-    const hash = transferHash(t);
-    if (!hash) continue;
-    const key = hash.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    hashes.push(hash);
-  }
-  return hashes;
+/** First Ponder page stores a cursor and does not replay history. */
+export function ponderPollPlan(items, lastId) {
+  const rows = ponderSwapRows(items);
+  if (!rows.length) return { rows: [], latest: lastId || null, prime: false };
+  const latest = rows[rows.length - 1]?.id || rows[rows.length - 1]?.hash || lastId;
+  if (!lastId) return { rows: [], latest, prime: true };
+  return { rows, latest, prime: false };
 }
 
-/** Newest-first Alchemy pages. First run stores latest hash and does not replay. */
-export function evmPollPlan(transfers, lastTx) {
-  const hashes = uniqueTxHashes(transfers);
-  if (!hashes.length) return { hashes: [], latest: lastTx || null, prime: false };
-  if (!lastTx) return { hashes: [], latest: hashes[0], prime: true };
-  const fresh = [];
-  for (const hash of hashes) {
-    if (hash.toLowerCase() === String(lastTx).toLowerCase()) break;
-    fresh.push(hash);
+export async function fetchPonderSwaps(env, { after, fetchImpl = fetch } = {}) {
+  const base = String(env.PONDER_URL || "").replace(/\/$/, "");
+  if (!base) return [];
+  const headers = { "Content-Type": "application/json" };
+  if (env.PONDER_QUERY_SECRET) {
+    headers.Authorization = `Bearer ${env.PONDER_QUERY_SECRET}`;
   }
-  return { hashes: fresh.reverse(), latest: hashes[0], prime: false };
-}
-
-export async function alchemyGetAssetTransfers(env, { chain, fromAddress, toAddress, fetchImpl = fetch } = {}) {
-  const meta = EVM_CHAINS.find((c) => c.id === chain);
-  if (!meta || !env.ALCHEMY_API_KEY) return [];
-  const res = await fetchImpl(`https://${meta.alchemy}.g.alchemy.com/v2/${env.ALCHEMY_API_KEY}`, {
+  const fields = `id chainId hash wallet timestamp tokenIn tokenInAmount tokenOut tokenOutAmount`;
+  const query = after
+    ? `query Swaps($after: String) {
+        swaps(where: { id_gt: $after }, orderBy: "id", orderDirection: "asc", limit: 50) {
+          items { ${fields} }
+        }
+      }`
+    : `query Swaps {
+        swaps(orderBy: "id", orderDirection: "desc", limit: 1) {
+          items { ${fields} }
+        }
+      }`;
+  const res = await fetchImpl(`${base}/graphql`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "alchemy_getAssetTransfers",
-      params: [
-        {
-          fromBlock: "0x0",
-          toBlock: "latest",
-          ...(fromAddress ? { fromAddress } : {}),
-          ...(toAddress ? { toAddress } : {}),
-          category: ["external", "erc20", "internal"],
-          withMetadata: true,
-          excludeZeroValue: true,
-          maxCount: "0x32",
-          order: "desc",
-        },
-      ],
-    }),
+    headers,
+    body: JSON.stringify({ query, variables: after ? { after } : {} }),
   });
   if (!res.ok) {
-    console.error("alchemy transfers failed", chain, res.status, await res.text());
+    console.error("ponder graphql failed", res.status, await res.text());
     return [];
   }
   const json = await res.json();
-  if (json?.error) {
-    console.error("alchemy transfers error", chain, json.error);
+  if (json?.errors) {
+    console.error("ponder graphql errors", json.errors);
     return [];
   }
-  return json?.result?.transfers || [];
-}
-
-export async function fetchEvmWalletTransfers(env, address, chain, fetchImpl = fetch) {
-  const from = await alchemyGetAssetTransfers(env, { chain, fromAddress: address, fetchImpl });
-  const to = await alchemyGetAssetTransfers(env, { chain, toAddress: address, fetchImpl });
-  return [...from, ...to];
+  const rows = ponderSwapRows(json);
+  return after ? rows : rows.slice().reverse();
 }
 
 export function collectTouchedAccounts(evt) {

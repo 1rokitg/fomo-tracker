@@ -2,8 +2,9 @@
  * fomo-tracker
  *
  * Swap feed is a Helius enhanced webhook on WORKER_URL/helius-webhook.
- * EVM swaps are Alchemy Address Activity on WORKER_URL/evm-webhook, plus
- * a per-minute alchemy_getAssetTransfers poll when ALCHEMY_API_KEY is set.
+ * EVM swaps are indexed by Ponder (ponder/) across Base, Ethereum, and BNB
+ * for the roster wallet set. The Worker pulls new rows from PONDER_URL/graphql
+ * (cron + GET /evm) or accepts POST /evm-webhook with Ponder swap records.
  * Thesis feed is FomoScan GET /v2/thesis, filtered to config.json members.
  *
  * Clan member handles live in config.json (FomoScan's clan board has no
@@ -13,17 +14,17 @@
  * Alerts are clan alerts: name / rank / 24h combined PnL come from
  * GET /v2/leaderboard/clans?window=24h keyed by config.clanId.
  *
- * FomoScan identity is handle <-> wallet. Swaps come from Helius.
- * Theses come from FomoScan's thesis feed (not on-chain).
+ * FomoScan identity is handle <-> wallet. Solana swaps come from Helius.
+ * EVM swaps come from Ponder. Theses come from FomoScan.
  *
  * Routes:
  *   POST /helius-webhook — Helius enhanced SWAP webhooks
- *   POST /evm-webhook    — Alchemy Address Activity (Base / Ethereum / BNB)
+ *   POST /evm-webhook    — Ponder-indexed EVM swaps (push)
  *   GET  /setup          — Telegram polling + register Helius webhook on WORKER_URL
  *   GET  /test           — sample clan alert (no swap)
  *   GET  /test-thesis    — sample thesis alert
  *   GET  /theses         — run one thesis poll now (same as cron)
- *   GET  /evm            — run one EVM transfer poll now (same as cron)
+ *   GET  /evm            — pull new Ponder swaps now (same as cron)
  *   GET  /replay         — inspect a signature (?sig=…&send=1 to also post)
  *   GET  /status         — Helius webhook + roster diagnostics (no Telegram)
  *   GET  /clan-update    — post rank / 24h PnL / member list (same as 6h cron)
@@ -51,11 +52,11 @@ import {
   asSwapEvent,
   rpcToEnhanced,
   heliusEvents,
-  alchemyActivityToSwaps,
-  evmPollPlan,
-  fetchEvmWalletTransfers,
+  ponderEvents,
+  ponderPollPlan,
+  ponderSwapToEvent,
+  fetchPonderSwaps,
   normalizeEvm,
-  EVM_CHAINS,
   normalizeHandle,
   pageNeedsOlderTheses,
   primedThesisKey,
@@ -1273,18 +1274,15 @@ async function handleHeliusWebhook(request, env) {
 }
 
 async function handleEvmWebhook(request, env) {
-  if (env.ALCHEMY_WEBHOOK_SECRET) {
-    const auth =
-      request.headers.get("x-alchemy-signature") ||
-      request.headers.get("X-Alchemy-Signature") ||
-      request.headers.get("Authorization");
-    if (auth !== env.ALCHEMY_WEBHOOK_SECRET) {
+  if (env.PONDER_WEBHOOK_SECRET) {
+    const auth = request.headers.get("Authorization") || "";
+    if (auth !== `Bearer ${env.PONDER_WEBHOOK_SECRET}`) {
       return new Response("unauthorized", { status: 401 });
     }
   }
 
   const payload = await request.json();
-  const events = alchemyActivityToSwaps(payload);
+  const events = ponderEvents(payload);
   let clan = { found: false };
   try {
     clan = (await fetchClanSnapshot(env)) || clan;
@@ -1325,58 +1323,32 @@ async function handleEvmWebhook(request, env) {
   );
 }
 
-async function getTrackedEvmAddresses(env) {
-  const { results } = await env.DB.prepare(
-    "SELECT evm_address FROM personas WHERE evm_address IS NOT NULL",
-  ).all();
-  return [
-    ...new Set(
-      (results || []).map((r) => normalizeEvm(r.evm_address)).filter(Boolean),
-    ),
-  ];
-}
-
-async function evmCursor(env, wallet, chain) {
+async function ponderCursor(env) {
   try {
     const row = await env.DB.prepare(
-      "SELECT last_tx FROM evm_cursors WHERE wallet = ? AND chain = ?",
-    )
-      .bind(wallet, chain)
-      .first();
-    return row?.last_tx || null;
+      "SELECT ponder_after FROM poll_state WHERE id = 1",
+    ).first();
+    return row?.ponder_after || null;
   } catch {
     return null;
   }
 }
 
-async function setEvmCursor(env, wallet, chain, lastTx) {
-  await env.DB.prepare(
-    `INSERT INTO evm_cursors (wallet, chain, last_tx)
-     VALUES (?, ?, ?)
-     ON CONFLICT(wallet, chain) DO UPDATE SET last_tx = excluded.last_tx`,
-  )
-    .bind(wallet, chain, lastTx)
+async function setPonderCursor(env, id) {
+  try {
+    await env.DB.prepare(
+      "ALTER TABLE poll_state ADD COLUMN ponder_after TEXT",
+    ).run();
+  } catch {
+    // already exists
+  }
+  await env.DB.prepare("UPDATE poll_state SET ponder_after = ? WHERE id = 1")
+    .bind(id)
     .run();
 }
 
 async function pollEvm(env) {
-  if (!env.ALCHEMY_API_KEY) return { skipped: "no_alchemy_key", notes: [] };
-
-  try {
-    await env.DB.prepare(
-      `CREATE TABLE IF NOT EXISTS evm_cursors (
-        wallet TEXT NOT NULL,
-        chain TEXT NOT NULL,
-        last_tx TEXT,
-        PRIMARY KEY (wallet, chain)
-      )`,
-    ).run();
-  } catch (err) {
-    console.error("evm_cursors table skipped", err);
-  }
-
-  const wallets = await getTrackedEvmAddresses(env);
-  if (!wallets.length) return { skipped: "no_evm_wallets", notes: [] };
+  if (!env.PONDER_URL) return { skipped: "no_ponder_url", notes: [] };
 
   let clan = { found: false };
   try {
@@ -1385,55 +1357,37 @@ async function pollEvm(env) {
     console.error("clan snapshot failed", err);
   }
 
-  const notes = [];
-  let alerts = 0;
-  for (const wallet of wallets) {
-    for (const chain of EVM_CHAINS) {
-      let transfers = [];
-      try {
-        transfers = await fetchEvmWalletTransfers(env, wallet, chain.id);
-      } catch (err) {
-        notes.push({
-          wallet,
-          chain: chain.id,
-          error: err?.message || "fetch_failed",
-        });
-        continue;
-      }
-      const lastTx = await evmCursor(env, wallet, chain.id);
-      const plan = evmPollPlan(transfers, lastTx);
-      if (plan.latest && plan.latest !== lastTx) {
-        await setEvmCursor(env, wallet, chain.id, plan.latest);
-      }
-      if (plan.prime) {
-        notes.push({ wallet, chain: chain.id, primed: true, latest: plan.latest });
-        continue;
-      }
-      for (const hash of plan.hashes) {
-        const forTx = transfers.filter(
-          (t) => String(t.hash || "").toLowerCase() === hash.toLowerCase(),
-        );
-        const events = alchemyActivityToSwaps({
-          network: chain.network,
-          activity: forTx,
-        }).filter((evt) => normalizeEvm(evt.feePayer) === wallet);
-        for (const evt of events) {
-          const dispatched = await dispatchSwapAlert(env, evt, clan);
-          alerts += dispatched.alerts || 0;
-          notes.push({
-            wallet,
-            chain: chain.id,
-            signature: hash,
-            skipped: dispatched.alerts === 0,
-            reason: dispatched.reason || "alerted",
-            matched: dispatched.matched || [],
-          });
-        }
-      }
-    }
+  const after = await ponderCursor(env);
+  const items = await fetchPonderSwaps(env, { after });
+  const plan = ponderPollPlan(items, after);
+  if (plan.latest && plan.latest !== after) {
+    await setPonderCursor(env, plan.latest);
+  }
+  if (plan.prime) {
+    console.log("evm-poll", { primed: true, latest: plan.latest });
+    return { primed: true, latest: plan.latest, notes: [] };
   }
 
-  console.log("evm-poll", { wallets: wallets.length, alerts, notes });
+  const notes = [];
+  let alerts = 0;
+  for (const row of plan.rows) {
+    const evt = ponderSwapToEvent(row);
+    if (!swapFocus(evt)?.token?.mint) {
+      notes.push({ skipped: true, reason: "not_a_swap", id: row.id });
+      continue;
+    }
+    const dispatched = await dispatchSwapAlert(env, evt, clan);
+    alerts += dispatched.alerts || 0;
+    notes.push({
+      id: row.id,
+      signature: row.hash,
+      skipped: dispatched.alerts === 0,
+      reason: dispatched.reason || "alerted",
+      matched: dispatched.matched || [],
+    });
+  }
+
+  console.log("evm-poll", { alerts, notes });
   return { alerts, notes };
 }
 

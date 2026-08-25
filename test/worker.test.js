@@ -739,28 +739,18 @@ describe("POST /evm-webhook", () => {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            type: "ADDRESS_ACTIVITY",
-            event: {
-              network: "BASE_MAINNET",
-              activity: [
-                {
-                  fromAddress: wallet,
-                  toAddress: "0x2222222222222222222222222222222222222222",
-                  hash: "0xevmswap1",
-                  value: 0.01,
-                  category: "external",
-                  rawContract: {},
-                },
-                {
-                  fromAddress: "0x3333333333333333333333333333333333333333",
-                  toAddress: wallet,
-                  hash: "0xevmswap1",
-                  value: 1000,
-                  category: "erc20",
-                  rawContract: { address: mint },
-                },
-              ],
-            },
+            swaps: [
+              {
+                id: "8453:0xevmswap1",
+                chainId: 8453,
+                hash: "0xevmswap1",
+                wallet,
+                tokenIn: "0x4200000000000000000000000000000000000006",
+                tokenInAmount: "0.01",
+                tokenOut: mint,
+                tokenOutAmount: "1000",
+              },
+            ],
           }),
         }),
         env,

@@ -16,8 +16,8 @@ import {
   formatMoney,
   FOMOSCAN_BASE,
   heliusEvents,
-  alchemyActivityToSwaps,
-  evmPollPlan,
+  ponderEvents,
+  ponderPollPlan,
   normalizeHandle,
   pageNeedsOlderTheses,
   pickClanFromBoard,
@@ -622,34 +622,25 @@ describe("heliusEvents", () => {
   });
 });
 
-describe("alchemyActivityToSwaps", () => {
+describe("ponderEvents", () => {
   const wallet = "0x0cd99204838851F0A803389faC19b98FC439dbc6";
   const meme = "0x1111111111111111111111111111111111111111";
+  const weth = "0x4200000000000000000000000000000000000006";
 
-  it("turns a Base ETH→token Address Activity payload into a BUY", () => {
-    const events = alchemyActivityToSwaps({
-      type: "ADDRESS_ACTIVITY",
-      event: {
-        network: "BASE_MAINNET",
-        activity: [
-          {
-            fromAddress: wallet,
-            toAddress: "0x2222222222222222222222222222222222222222",
-            hash: "0xdead",
-            value: 0.01,
-            category: "external",
-            rawContract: {},
-          },
-          {
-            fromAddress: "0x3333333333333333333333333333333333333333",
-            toAddress: wallet,
-            hash: "0xdead",
-            value: 1000,
-            category: "erc20",
-            rawContract: { address: meme },
-          },
-        ],
-      },
+  it("turns a Ponder Base swap row into a BUY", () => {
+    const events = ponderEvents({
+      swaps: [
+        {
+          id: "8453:0xdead",
+          chainId: 8453,
+          hash: "0xdead",
+          wallet,
+          tokenIn: weth,
+          tokenInAmount: "0.01",
+          tokenOut: meme,
+          tokenOutAmount: "1000",
+        },
+      ],
     });
     const evt = events.find((e) => e.feePayer === wallet.toLowerCase());
     expect(evt).toBeTruthy();
@@ -660,21 +651,21 @@ describe("alchemyActivityToSwaps", () => {
   });
 });
 
-describe("evmPollPlan", () => {
-  const transfers = [{ hash: "0xaaa" }, { hash: "0xbbb" }, { hash: "0xaaa" }];
+describe("ponderPollPlan", () => {
+  const items = [{ id: "a" }, { id: "b" }];
 
   it("primes on the first page and does not replay", () => {
-    expect(evmPollPlan(transfers, null)).toEqual({
-      hashes: [],
-      latest: "0xaaa",
+    expect(ponderPollPlan(items, null)).toEqual({
+      rows: [],
+      latest: "b",
       prime: true,
     });
   });
 
-  it("returns newer hashes oldest-first after a cursor", () => {
-    expect(evmPollPlan(transfers, "0xbbb")).toEqual({
-      hashes: ["0xaaa"],
-      latest: "0xaaa",
+  it("returns new rows after a cursor", () => {
+    expect(ponderPollPlan(items, "a")).toEqual({
+      rows: items,
+      latest: "b",
       prime: false,
     });
   });

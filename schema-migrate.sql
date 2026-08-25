@@ -15,16 +15,10 @@ ALTER TABLE poll_state ADD COLUMN helius_webhook_id TEXT;
 ALTER TABLE poll_state ADD COLUMN last_webhook_at TEXT;
 ALTER TABLE poll_state ADD COLUMN last_webhook_note TEXT;
 ALTER TABLE poll_state ADD COLUMN last_test_at TEXT;
+ALTER TABLE poll_state ADD COLUMN ponder_after TEXT;
 
 CREATE TABLE IF NOT EXISTS seen_theses (
   id       TEXT PRIMARY KEY,
   handle   TEXT NOT NULL,
   seen_at  TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS evm_cursors (
-  wallet  TEXT NOT NULL,
-  chain   TEXT NOT NULL,
-  last_tx TEXT,
-  PRIMARY KEY (wallet, chain)
 );

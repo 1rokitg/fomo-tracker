@@ -6,13 +6,13 @@ Telegram bot that posts **clan swap alerts** for your fomo.family clan.
 
 - **FomoScan** resolves a handle to its verified Solana/EVM wallets (identity only — no trade feed).
 - **Helius** enhanced webhook + cron address sync for Solana swaps.
-- **Alchemy** `POST /evm-webhook` (Address Activity) plus a per-minute `alchemy_getAssetTransfers` poll for Base, Ethereum, and BNB.
+- **Ponder** (`ponder/`) indexes the roster EVM wallets on Base, Ethereum, and BNB. The Worker pulls new swap rows from `PONDER_URL/graphql`.
 
 Alerts are posted to the configured Telegram group (`TELEGRAM_CHAT_ID` in `wrangler.toml`) via Bot API `sendMessage`. That is outbound-only — the bot does not need a Telegram webhook.
 
 Each alert is a **clan alert**: clan name, 24h rank, and combined 24h PnL come from FomoScan [`/v2/leaderboard/clans?window=24h`](https://api.fomoscan.sh/docs) (matched on `config.clanId`). Member @handles are not on that board, so the roster is still `config.json`.
 
-EVM wallets on the roster (Base / Ethereum / BNB) are watched when `ALCHEMY_API_KEY` is set. First poll per wallet+chain records a cursor and does not replay old transfers. Point an Alchemy Address Activity webhook at `https://<your-worker-url>/evm-webhook` if you want push instead of waiting for cron.
+EVM wallets on the roster are indexed by [Ponder](https://ponder.sh) (see `ponder/`). Set `PONDER_URL` on the Worker (the Ponder HTTP origin). First GraphQL poll stores a cursor and does not replay history. Optional: `POST /evm-webhook` with `{ "swaps": [ ...Ponder rows ] }` if you want Ponder to push.
 
 ## 1. Prerequisites
 
@@ -48,8 +48,11 @@ npx wrangler d1 execute fomo-tracker --remote --file=./schema-migrate.sql
 wrangler secret put FOMOSCAN_KEY
 wrangler secret put TELEGRAM_BOT_TOKEN
 wrangler secret put HELIUS_API_KEY
-wrangler secret put ALCHEMY_API_KEY
 ```
+
+Set `PONDER_URL` in `wrangler.toml` `[vars]` (or as a Worker var) to your Ponder origin, e.g. `http://127.0.0.1:42069`.
+
+Ponder itself needs RPC URLs in `ponder/.env` (`PONDER_RPC_URL_1`, `_8453`, `_56`) and start blocks so it does not backfill genesis.
 
 Set `TELEGRAM_CHAT_ID` in `wrangler.toml` `[vars]` to the group id (e.g. `-1004446376533`).
 
